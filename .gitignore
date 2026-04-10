@@ -7,3 +7,4 @@ files/
 __pycache__
 *.db
 pyrightconfig.json
+pretrained_models/TANet.pth
