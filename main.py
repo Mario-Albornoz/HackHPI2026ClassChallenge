@@ -2,7 +2,7 @@ from orchestrator.HandlerOrchestrator import HandlerOrchestrator
 
 
 def main():
-    orchestrator = HandlerOrchestrator()
+    orchestrator = HandlerOrchestrator().preproccess_data()
     return None
 
 
