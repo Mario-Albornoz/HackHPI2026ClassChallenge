@@ -3,6 +3,7 @@ To run the evaluation for this project you can run the File under model called T
 Requirements:
 python3.11 (otherwise dependicies might fail)
 
+###HOW TO RUN:
 ```
 python3.11 -m venv venv
 source venv/bin/activate
