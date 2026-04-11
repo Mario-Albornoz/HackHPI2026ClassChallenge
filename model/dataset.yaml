@@ -1,11 +1,11 @@
-path: /Users/marioandresalbornoz/Desktop/HackHPI2026_release
+path: /Users/marioandresalbornoz/Desktop/denoised_dirty_data
 train: data/train
 val: data/val
 
 train_json: /Users/marioandresalbornoz/Desktop/HackHPI2026_release/annotations/train.json
 val_json: /Users/marioandresalbornoz/Desktop/HackHPI2026_release/annotations/val.json
-train_json_root: /Users/marioandresalbornoz/Desktop/HackHPI2026_release/annotation/train
-val_json_root: /Users/marioandresalbornoz/Desktop/HackHPI2026_release/annotation/val
+train_json_root: /Users/marioandresalbornoz/Desktop/denoised_dirty_data/annotation/train
+val_json_root: /Users/marioandresalbornoz/Desktop/HackHPI2026_release_dirty/annotation/val
 
 names:
   0: person

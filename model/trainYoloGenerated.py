@@ -3,6 +3,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
+import yaml
 from ultralytics.data.dataset import DATASET_CACHE_VERSION, YOLODataset
 from ultralytics.data.utils import (
     get_hash,
@@ -10,7 +11,7 @@ from ultralytics.data.utils import (
     save_dataset_cache_file,
 )
 from ultralytics.models.yolo import YOLO
-from ultralytics.models.yolo.detect import DetectionTrainer
+from ultralytics.models.yolo.detect import DetectionTrainer, DetectionValidator
 from ultralytics.utils import colorstr
 from ultralytics.utils.tqdm import TQDM
 
@@ -298,15 +299,294 @@ class MultiCOCOTrainer(DetectionTrainer):
         )
 
 
+class MultiCOCOValidator(DetectionValidator):
+    """
+    Validator that uses MultiCOCODataset for validation/test, matching the custom
+    COCO-JSON training pipeline.
+    """
+
+    def build_dataset(self, img_path, mode="val", batch=None):
+        if mode == "train":
+            json_root = self.data.get("train_json_root")
+            if not json_root:
+                raise ValueError("dataset.yaml is missing 'train_json_root'")
+        elif mode == "val":
+            json_root = self.data.get("val_json_root")
+            if not json_root:
+                raise ValueError("dataset.yaml is missing 'val_json_root'")
+        elif mode == "test":
+            json_root = self.data.get("test_json_root", self.data.get("val_json_root"))
+            if not json_root:
+                raise ValueError(
+                    "dataset.yaml is missing 'test_json_root' and 'val_json_root'"
+                )
+        else:
+            raise ValueError(f"Unsupported mode: {mode}")
+
+        json_files = find_json_files(json_root)
+        if not json_files:
+            raise ValueError(f"No COCO JSON files found under: {json_root}")
+
+        return MultiCOCODataset(
+            img_path=img_path,
+            json_files=json_files,
+            imgsz=self.args.imgsz,
+            batch_size=batch,
+            augment=False,
+            hyp=self.args,
+            rect=True,
+            cache=self.args.cache or None,
+            single_cls=self.args.single_cls or False,
+            stride=32,
+            pad=0.5,
+            prefix=colorstr(f"{mode}: "),
+            task=self.args.task,
+            classes=self.args.classes,
+            fraction=1.0,
+        )
+
+
+def _safe_float(value):
+    """
+    Convert scalar/array-like metric outputs to a float when possible.
+    Returns None if the metric is empty or NaN.
+    """
+    if value is None:
+        return None
+
+    try:
+        arr = np.asarray(value)
+
+        if arr.size == 0:
+            return None
+
+        if arr.ndim == 0:
+            val = float(arr)
+            return None if np.isnan(val) else val
+
+        finite = arr[np.isfinite(arr)]
+        if finite.size == 0:
+            return None
+
+        return float(finite.mean())
+    except Exception:
+        try:
+            val = float(value)
+            return None if np.isnan(val) else val
+        except Exception:
+            return None
+
+
+def evaluate_multi_coco_yolo(
+    model_path: str,
+    data_yaml: str,
+    split: str = "val",
+    imgsz: int = 416,
+    batch: int = 16,
+    conf: float = 0.001,
+    iou: float = 0.6,
+    device: str = "cpu",
+    workers: int = 0,
+):
+    """
+    Evaluate a trained YOLO model using the same custom COCO-JSON dataset pipeline
+    as training.
+    """
+    model_path = Path(model_path).expanduser().resolve()
+    data_yaml = Path(data_yaml).expanduser().resolve()
+
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model weights not found: {model_path}")
+
+    if not data_yaml.exists():
+        raise FileNotFoundError(f"Dataset YAML not found: {data_yaml}")
+
+    with data_yaml.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    if not isinstance(data, dict):
+        raise ValueError(f"Invalid dataset YAML: {data_yaml}")
+
+    if split not in {"val", "test"}:
+        raise ValueError("split must be 'val' or 'test'")
+
+    if split not in data or data.get(split) is None:
+        raise ValueError(
+            f"Requested split '{split}' is missing in dataset.yaml. "
+            f"Available keys: {list(data.keys())}"
+        )
+
+    print(f"Using model: {model_path}")
+    print(f"Using dataset YAML: {data_yaml}")
+    print(f"Evaluating split: {split}")
+
+    model = YOLO(str(model_path))
+
+    validator_args = {
+        "model": str(model_path),
+        "data": str(data_yaml),
+        "imgsz": imgsz,
+        "batch": batch,
+        "conf": conf,
+        "iou": iou,
+        "device": device,
+        "workers": workers,
+        "task": "detect",
+        "mode": "val",
+        "split": split,
+        "plots": True,
+        "save_json": True,
+        "verbose": True,
+        "rect": True,
+        "single_cls": False,
+    }
+
+    validator = MultiCOCOValidator(args=validator_args)
+    metrics = validator(model=model.model)
+
+    summary = {
+        "model_path": str(model_path),
+        "data_yaml": str(data_yaml),
+        "split": split,
+        "precision": _safe_float(metrics.box.p),
+        "recall": _safe_float(metrics.box.r),
+        "mAP50": _safe_float(metrics.box.map50),
+        "mAP50_95": _safe_float(metrics.box.map),
+    }
+
+    print("\nEvaluation summary:")
+    for k, v in summary.items():
+        print(f"{k}: {v}")
+
+    return summary
+
+
+def evaluate_multi_coco_yolo(
+    model_path: str,
+    data_yaml: str,
+    split: str = "val",
+    imgsz: int = 416,
+    batch: int = 16,
+    conf: float = 0.001,
+    iou: float = 0.6,
+    device: str = "cpu",
+    workers: int = 0,
+):
+    """
+    Evaluate a trained YOLO model using the same custom COCO-JSON dataset pipeline
+    as training.
+    """
+    model_path = Path(model_path).expanduser().resolve()
+    data_yaml = Path(data_yaml).expanduser().resolve()
+
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model weights not found: {model_path}")
+
+    if not data_yaml.exists():
+        raise FileNotFoundError(f"Dataset YAML not found: {data_yaml}")
+
+    with data_yaml.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    if not isinstance(data, dict):
+        raise ValueError(f"Invalid dataset YAML: {data_yaml}")
+
+    if split not in {"val", "test"}:
+        raise ValueError("split must be 'val' or 'test'")
+
+    if split not in data or data.get(split) is None:
+        raise ValueError(
+            f"Requested split '{split}' is missing in dataset.yaml. "
+            f"Available keys: {list(data.keys())}"
+        )
+
+    print(f"Using model: {model_path}")
+    print(f"Using dataset YAML: {data_yaml}")
+    print(f"Evaluating split: {split}")
+
+    model = YOLO(str(model_path))
+
+    validator_args = {
+        "model": str(model_path),
+        "data": str(data_yaml),
+        "imgsz": imgsz,
+        "batch": batch,
+        "conf": conf,
+        "iou": iou,
+        "device": device,
+        "workers": workers,
+        "task": "detect",
+        "mode": "val",
+        "split": split,
+        "plots": True,
+        "save_json": True,
+        "verbose": True,
+        "rect": True,
+        "single_cls": False,
+    }
+
+    validator = MultiCOCOValidator(args=validator_args)
+    metrics = validator(model=model.model)
+
+    summary = {
+        "model_path": str(model_path),
+        "data_yaml": str(data_yaml),
+        "split": split,
+        "precision": _safe_float(metrics.box.p),
+        "recall": _safe_float(metrics.box.r),
+        "mAP50": _safe_float(metrics.box.map50),
+        "mAP50_95": _safe_float(metrics.box.map),
+    }
+
+    print("\nEvaluation summary:")
+    for k, v in summary.items():
+        print(f"{k}: {v}")
+
+    return summary
+
+
+# if __name__ == "__main__":
+#    BASE_DIR = Path(__file__).resolve().parent
+#    DATASET_YAML = BASE_DIR / "dataset.yaml"
+#
+#    model = YOLO("yolo26n.pt")
+#    model.train(
+#        data=str(DATASET_YAML),
+#        epochs=30,
+#        fraction=0.2,
+#        imgsz=416,
+#        trainer=MultiCOCOTrainer,
+#        device="cpu",  # change if you want
+#    )
+
 if __name__ == "__main__":
     BASE_DIR = Path(__file__).resolve().parent
     DATASET_YAML = BASE_DIR / "dataset.yaml"
 
-    model = YOLO("yolo26n.pt")
-    model.train(
-        data=str(DATASET_YAML),
-        epochs=10,
-        imgsz=640,
-        trainer=MultiCOCOTrainer,
-        device="cpu",  # change if you want
-    )
+    TRAIN_MODE = False
+
+    if TRAIN_MODE:
+        model = YOLO("yolo26n.pt")
+        model.train(
+            data=str(DATASET_YAML),
+            epochs=30,
+            fraction=0.2,
+            imgsz=416,
+            trainer=MultiCOCOTrainer,
+            device="cpu",
+        )
+    else:
+        evaluate_multi_coco_yolo(
+            model_path=BASE_DIR.parent
+            / "runs"
+            / "detect"
+            / "train16"
+            / "weights"
+            / "best.pt",
+            data_yaml=DATASET_YAML,
+            split="val",
+            imgsz=416,
+            batch=16,
+            device="cpu",
+            workers=0,
+        )
