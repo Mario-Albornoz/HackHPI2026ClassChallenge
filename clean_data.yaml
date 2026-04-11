@@ -1,0 +1,6 @@
+path: /Users/marioandresalbornoz/Desktop/split_clean_dataset
+train: images/train
+val: images/val
+
+names:
+  0: person
